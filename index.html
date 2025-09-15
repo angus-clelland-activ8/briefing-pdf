@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF Library</title>
+  <meta name="description" content="Simple PDF previewer for GitHub Pages" />
+  <style>
+    :root{
+      --bg:#0f1724; --panel:#0b1220; --muted:#9aa4b2; --accent:#06b6d4;
+      --glass: rgba(255,255,255,0.03);
+    }
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{background:linear-gradient(180deg,#071021 0%, #081426 100%);color:#e6eef6;display:flex;flex-direction:column}
+    header{padding:18px 20px;border-bottom:1px solid rgba(255,255,255,0.03);display:flex;align-items:center;gap:12px}
+    h1{font-size:18px;margin:0}
+    main{display:flex;flex:1;min-height:0} /* allow children to shrink */
+    nav{width:300px;max-width:40%;background:var(--panel);padding:12px;border-right:1px solid rgba(255,255,255,0.03);overflow:auto}
+    .search{display:flex;gap:8px;margin-bottom:12px}
+    .search input{flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:var(--glass);color:inherit}
+    ul.file-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}
+    li.item{padding:10px;border-radius:10px;cursor:pointer;background:transparent;border:1px solid transparent}
+    li.item:hover{border-color:rgba(255,255,255,0.03);background:rgba(255,255,255,0.01)}
+    li.item.active{outline:2px solid rgba(6,182,212,0.12);background:linear-gradient(90deg, rgba(6,182,212,0.02), transparent)}
+    .meta{font-size:13px;color:var(--muted)}
+    .preview{flex:1;display:flex;flex-direction:column;min-width:0}
+    .preview-toolbar{display:flex;gap:10px;padding:10px;border-bottom:1px solid rgba(255,255,255,0.02);align-items:center}
+    .btn{padding:8px 12px;border-radius:8px;background:transparent;border:1px solid rgba(255,255,255,0.04);cursor:pointer}
+    .iframe-wrap{flex:1;min-height:0;display:flex}
+    iframe.viewer{flex:1;border:0;width:100%;height:100%}
+    .fallback{padding:20px;text-align:center;color:var(--muted)}
+    footer{padding:10px 14px;font-size:13px;color:var(--muted);border-top:1px solid rgba(255,255,255,0.02);text-align:center}
+    @media (max-width:720px){
+      nav{width:100%;max-width:none;height:220px;border-right:none;border-bottom:1px solid rgba(255,255,255,0.03)}
+      main{flex-direction:column}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden><rect width="24" height="24" rx="6" fill="#06b6d4"/><text x="50%" y="54%" text-anchor="middle" font-size="12" font-family="monospace" fill="#042027" dy="4">PDF</text></svg>
+    <div>
+      <h1>PDF Library</h1>
+      <div style="font-size:13px;color:var(--muted)">Preview large PDFs directly in the browser</div>
+    </div>
+  </header>
+
+  <main>
+    <nav aria-label="Documents list">
+      <div class="search">
+        <input id="q" placeholder="Search files (title or filename)" aria-label="Search files">
+        <button class="btn" id="clearBtn" title="Clear search">✕</button>
+      </div>
+      <ul id="fileList" class="file-list" role="list"></ul>
+    </nav>
+
+    <section class="preview" aria-live="polite">
+      <div class="preview-toolbar">
+        <div id="docTitle" style="font-weight:600">Select a document</div>
+        <div style="flex:1"></div>
+        <a id="downloadLink" class="btn" href="#" download target="_blank" rel="noopener">Download</a>
+        <a id="openNew" class="btn" href="#" target="_blank" rel="noopener">Open in new tab</a>
+      </div>
+
+      <div class="iframe-wrap" id="viewerWrap">
+        <div class="fallback" id="fallbackText">No document selected</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>Place your PDFs in <code>/pdfs/</code> and update <code>files.json</code>. Hosted with GitHub Pages.</footer>
+
+  <script>
+    // CONFIG: path to your files.json (edit if you store elsewhere)
+    const FILES_JSON = 'files.json';
+
+    // Elements
+    const fileListEl = document.getElementById('fileList');
+    const viewerWrap = document.getElementById('viewerWrap');
+    const docTitleEl = document.getElementById('docTitle');
+    const downloadLink = document.getElementById('downloadLink');
+    const openNew = document.getElementById('openNew');
+    const fallbackText = document.getElementById('fallbackText');
+    const q = document.getElementById('q');
+    const clearBtn = document.getElementById('clearBtn');
+
+    let files = [];
+    let currentIndex = -1;
+
+    // Load files.json
+    fetch(FILES_JSON).then(r=>{
+      if (!r.ok) throw new Error('Failed to load files.json');
+      return r.json();
+    }).then(data=>{
+      // expect an array of {title, filename, description (opt)}
+      files = data || [];
+      renderList(files);
+      // auto-open first if present
+      if(files.length>0) selectFile(0);
+    }).catch(err=>{
+      fileListEl.innerHTML = '<li class="meta">Error loading files.json — make sure it exists in the repo root and is valid JSON.</li>';
+      console.error(err);
+    });
+
+    function renderList(list){
+      fileListEl.innerHTML = '';
+      if(list.length===0){
+        fileListEl.innerHTML = '<li class="meta">No documents configured. Edit <code>files.json</code>.</li>';
+        return;
+      }
+      list.forEach((f, i)=>{
+        const li = document.createElement('li');
+        li.className = 'item';
+        li.tabIndex = 0;
+        li.setAttribute('role','button');
+        li.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+                          <div>
+                            <div style="font-weight:600">${escapeHtml(f.title||f.filename)}</div>
+                            <div class="meta">${escapeHtml(f.description||f.filename)}</div>
+                          </div>
+                          <div class="meta">${f.size?escapeHtml(f.size):''}</div>
+                        </div>`;
+        li.addEventListener('click',()=>selectFile(i));
+        li.addEventListener('keydown',(ev)=>{ if(ev.key==='Enter' || ev.key===' ') selectFile(i); });
+        fileListEl.appendChild(li);
+      });
+    }
+
+    function selectFile(index){
+      if(index<0 || index>=files.length) return;
+      currentIndex = index;
+      const f = files[index];
+      // mark active
+      Array.from(fileListEl.children).forEach((c, i)=>c.classList.toggle('active', i===index));
+      docTitleEl.textContent = f.title || f.filename;
+      const pdfPath = (f.path||('pdfs/' + f.filename));
+      downloadLink.href = pdfPath;
+      openNew.href = pdfPath;
+
+      // remove old iframe if any
+      viewerWrap.innerHTML = '';
+
+      // Create iframe (browser built-in viewer)
+      const iframe = document.createElement('iframe');
+      iframe.className = 'viewer';
+      iframe.loading = 'lazy';
+      iframe.src = pdfPath;
+      iframe.title = `Preview of ${f.title||f.filename}`;
+
+      // Accessibility: show fallback if iframe cannot load (some browsers might block)
+      iframe.addEventListener('error', ()=> {
+        viewerWrap.innerHTML = `<div class="fallback">Browser cannot preview this PDF. <a href="${pdfPath}" target="_blank" rel="noopener">Open / download</a></div>`;
+      });
+
+      // If the PDF fails to render in iframe (content-type issues), also show fallback after a short timeout
+      const fallbackTimer = setTimeout(()=> {
+        if(!iframe.contentWindow) {
+          // don't replace if it successfully loaded quickly
+          // Some browsers disallow reading .contentWindow; this is a heuristic
+          // show a friendly fallback link
+          // but still append the iframe — user can open in new tab
+          if (!viewerWrap.contains(iframe)) return;
+          const note = document.createElement('div');
+          note.className = 'fallback';
+          note.innerHTML = `If the preview doesn't appear, <a href="${pdfPath}" target="_blank" rel="noopener">open the PDF in a new tab</a>.`;
+          viewerWrap.appendChild(note);
+        }
+      }, 1800);
+
+      iframe.onload = ()=> { clearTimeout(fallbackTimer); };
+
+      viewerWrap.appendChild(iframe);
+    }
+
+    // Search
+    q.addEventListener('input', ()=> {
+      const term = q.value.trim().toLowerCase();
+      const filtered = files.filter(f=>{
+        return (f.title||'').toLowerCase().includes(term) || (f.filename||'').toLowerCase().includes(term) || (f.description||'').toLowerCase().includes(term);
+      });
+      renderList(filtered);
+      // reset selection if needed
+      if(filtered.length>0) selectFile(files.indexOf(filtered[0]));
+      else {
+        // clear preview
+        currentIndex = -1;
+        docTitleEl.textContent = 'No document';
+        viewerWrap.innerHTML = '<div class="fallback">No document matches your search.</div>';
+      }
+    });
+
+    clearBtn.addEventListener('click', ()=> { q.value=''; q.dispatchEvent(new Event('input')); });
+
+    // small helper
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  </script>
+</body>
+</html>
